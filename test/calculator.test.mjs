@@ -1,0 +1,42 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { runCli } from '../src/cli.ts';
+import { format } from 'node:util';
+import { mill, turn, calculate, materials, startingPoints, getMaterial } from '../src/index.ts';
+const base = { material: 'al6061', tool: 'carbide', d: 10, z: 3, vc: 100, fz: 0.05 };
+const near = (a,b) => assert.ok(Math.abs(a-b) < 1e-8, `${a} != ${b}`);
+const cli = (...args) => {
+  let stdout = '', stderr = '';
+  const log = console.log, table = console.table, error = console.error, previous = process.exitCode;
+  console.log = (...v) => { stdout += format(...v) + '\n'; };
+  console.table = v => { stdout += format(v) + '\n'; };
+  console.error = (...v) => { stderr += format(...v) + '\n'; };
+  process.exitCode = 0;
+  try { runCli(args); return { stdout, stderr, status: process.exitCode }; }
+  finally { console.log = log; console.table = table; console.error = error; process.exitCode = previous; }
+};
+test('milling formula', () => { const r = mill(base); near(r.rpm, 100000/(Math.PI*10)); near(r.feed, r.rpm*3*0.05); });
+test('turning formula', () => { const r = turn({ material:'brass', tool:'hss', d:40, vc:80, feedPerRev:0.2 }); near(r.rpm,80000/(Math.PI*40)); near(r.feed,r.rpm*0.2); near(r.feedPerRev,0.2); });
+test('RPM clamp recomputes feed', () => { const r=mill({...base,maxRpm:1000}); assert.equal(r.rpm,1000); near(r.feed,150); assert.match(r.warnings[0],/recomputed/); });
+test('feed clamp reports effective chip load', () => { const r=mill({...base,maxFeed:100}); assert.equal(r.feed,100); near(r.effectiveFz,100/r.rpm/3); assert.equal(r.warnings.length,1); });
+test('both limits applied in order', () => { const r=mill({...base,maxRpm:1000,maxFeed:50}); assert.equal(r.feed,50); assert.equal(r.warnings.length,2); });
+test('limits above request do not warn', () => assert.equal(mill({...base,maxRpm:100000,maxFeed:100000}).warnings.length,0));
+test('imperial milling equals metric', () => { const a=mill(base), b=mill({...base,imperial:true,d:10/25.4,vc:100/0.3048,fz:0.05/25.4}); near(a.rpm,b.rpm); near(a.feed,b.feed*25.4); });
+test('imperial turning equals metric', () => { const a={material:'pom',tool:'hss',d:25.4,vc:100,feedPerRev:0.254}; const m=turn(a), i=turn({...a,imperial:true,d:1,vc:100/0.3048,feedPerRev:0.01}); near(m.rpm,i.rpm); near(m.feed,i.feed*25.4); });
+test('imperial max feed uses in/min', () => assert.equal(mill({...base,imperial:true,maxFeed:0.01}).feed,0.01));
+test('six materials have positive ordered ranges', () => { assert.equal(materials.length,6); for(const m of materials) for(const r of [...Object.values(m.vc),...m.fz]) assert.ok(r[0]>0 && r[1]>=r[0]); });
+test('material aliases and case', () => { assert.equal(getMaterial('Q235').id,'mild-steel'); assert.equal(getMaterial('1018').id,'mild-steel'); assert.equal(getMaterial('45#').id,'steel45'); });
+test('unknown material rejected', () => assert.throws(()=>mill({...base,material:'wood'}),/Unknown material/));
+test('invalid tool rejected', () => assert.throws(()=>mill({...base,tool:'diamond'}),/Tool/));
+test('diameter boundaries select correct bands', () => { for(const [d,expected] of [[3,0.02],[3.001,0.04],[6,0.04],[6.001,0.07],[12,0.07],[12.001,0.105]]) near(startingPoints('al6061','carbide',d).fz,expected); });
+test('default midpoint Vc and fz', () => { const r=mill({material:'al6061',tool:'carbide',d:10,z:3}); assert.equal(r.vc,300); near(r.fz,0.07); });
+test('invalid numeric inputs rejected', () => { for(const key of ['d','z','vc','fz','maxRpm','maxFeed']) for(const value of [0,-1,NaN,Infinity]) assert.throws(()=>mill({...base,[key]:value})); });
+test('fractional flute count rejected', () => assert.throws(()=>mill({...base,z:2.5}),/integer/));
+test('turn requires positive feed per revolution', () => { for(const value of [undefined,0,-1,Infinity]) assert.throws(()=>turn({material:'brass',tool:'hss',d:10,feedPerRev:value})); });
+test('mode-specific options rejected', () => { assert.throws(()=>turn({...base,feedPerRev:0.1})); assert.throws(()=>mill({...base,feedPerRev:0.1})); assert.throws(()=>calculate('drill',base)); });
+test('CLI milling JSON', () => { const p=cli('mill','--material','al6061','--tool','carbide','--d','10','--z','3','--json'); assert.equal(p.status,0,p.stderr); assert.equal(JSON.parse(p.stdout).mode,'mill'); });
+test('CLI turning human output and warning', () => { const p=cli('turn','--material','brass','--tool','hss','--d','10','--feed-per-rev','0.1','--max-rpm','100'); assert.equal(p.status,0,p.stderr); assert.match(p.stdout,/Spindle RPM/); assert.match(p.stderr,/Warning: RPM clamped/); });
+test('CLI material JSON includes bands and imperial units', () => { const p=cli('materials','--imperial','--json'); assert.equal(p.status,0); const r=JSON.parse(p.stdout); assert.equal(r.materials.length,6); assert.equal(r.units.vc,'SFM'); assert.equal(r.materials[0].fz[3].diameterMax,null); });
+test('CLI human materials includes fz', () => { const p=cli('materials'); assert.equal(p.status,0); assert.match(p.stdout,/mm\/tooth/); });
+test('CLI invalid invocations fail', () => { for(const args of [['bad'],['mill'],['mill','--oops'],['materials','--d','2'],['mill','--d'],['materials','--json','--json']]) { const p=cli(...args); assert.equal(p.status,1,args.join(' ')); assert.match(p.stderr,/Error:/); } });
+test('CLI help', () => { const p=cli('--help'); assert.equal(p.status,0); assert.match(p.stdout,/cnc-fs turn/); });

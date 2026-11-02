@@ -1,0 +1,13 @@
+{
+  "name": "cnc-feeds-speeds",
+  "version": "1.0.0",
+  "description": "Dependency-free CNC milling and turning starting-point calculator",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.6.0" },
+  "bin": { "cnc-fs": "bin/cnc-fs.js" },
+  "exports": { ".": "./src/index.ts" },
+  "types": "./src/index.ts",
+  "files": ["src", "bin", "README.md", "LICENSE"],
+  "scripts": { "test": "node --experimental-strip-types test/calculator.test.mjs", "start": "node --experimental-strip-types src/cli.ts" }
+}
